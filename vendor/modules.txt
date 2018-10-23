@@ -1,4 +1,4 @@
-# github.com/genuinetools/pkg v0.0.0-20180910213200-1c141f661797
+# github.com/genuinetools/pkg v0.0.0-20181011002109-d2c1f817b813
 github.com/genuinetools/pkg/cli
 # github.com/golang/protobuf v1.2.0
 github.com/golang/protobuf/proto
@@ -6,17 +6,19 @@ github.com/golang/protobuf/proto
 github.com/google/go-github/github
 # github.com/google/go-querystring v1.0.0
 github.com/google/go-querystring/query
-# github.com/sirupsen/logrus v1.0.6
+# github.com/konsorten/go-windows-terminal-sequences v0.0.0-20180402223658-b729f2633dfe
+github.com/konsorten/go-windows-terminal-sequences
+# github.com/sirupsen/logrus v1.1.1
 github.com/sirupsen/logrus
-# golang.org/x/crypto v0.0.0-20180910181607-0e37d006457b
+# golang.org/x/crypto v0.0.0-20180904163835-0709b304e793
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/net v0.0.0-20180925072008-f04abc6bdfa7
+# golang.org/x/net v0.0.0-20181017193950-04a2e542c03f
 golang.org/x/net/context
 golang.org/x/net/context/ctxhttp
-# golang.org/x/oauth2 v0.0.0-20180821212333-d2e6202438be
+# golang.org/x/oauth2 v0.0.0-20181017192945-9dcd33a902f4
 golang.org/x/oauth2
 golang.org/x/oauth2/internal
-# golang.org/x/sys v0.0.0-20180925112736-b09afc3d579e
+# golang.org/x/sys v0.0.0-20180905080454-ebe1bf3edb33
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 # google.golang.org/appengine v1.2.0

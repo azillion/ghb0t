@@ -4,19 +4,18 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/azillion/ghb0t/version"
+	"github.com/genuinetools/pkg/cli"
+	"github.com/google/go-github/github"
+	"github.com/gregjones/httpcache/diskcache"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/genuinetools/ghb0t/version"
-	"github.com/genuinetools/pkg/cli"
-	"github.com/google/go-github/github"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
 )
 
 var (
@@ -26,14 +25,16 @@ var (
 
 	lastChecked time.Time
 
-	debug bool
+	debug       bool
+	shouldCache bool
+	cache       *diskcache.Cache
 )
 
 func main() {
 	// Create a new cli program.
 	p := cli.NewProgram()
 	p.Name = "ghb0t"
-	p.Description = "A GitHub Bot to automatically delete your fork's branches after a pull request has been merged"
+	p.Description = "A GitHub Bot to search all github repos for `github.com/golang/lint/golint import`"
 
 	// Set the GitCommit and Version.
 	p.GitCommit = version.GITCOMMIT
@@ -46,6 +47,7 @@ func main() {
 	p.FlagSet.StringVar(&enturl, "url", "", "Connect to a specific GitHub server, provide full API URL (ex. https://github.example.com/api/v3/)")
 
 	p.FlagSet.BoolVar(&debug, "d", false, "enable debug logging")
+	p.FlagSet.BoolVar(&shouldCache, "c", true, "enable response caching")
 
 	// Set the before function.
 	p.Before = func(ctx context.Context) error {
@@ -56,6 +58,10 @@ func main() {
 
 		if token == "" {
 			return fmt.Errorf("GitHub token cannot be empty")
+		}
+
+		if shouldCache {
+			cache = diskcache.New(".search-cache")
 		}
 
 		return nil
@@ -106,13 +112,24 @@ func main() {
 
 		logrus.Infof("Bot started for user %s.", username)
 
-		for range ticker.C {
-			page := 1
-			perPage := 20
-			if err := getNotifications(ctx, client, username, page, perPage); err != nil {
-				logrus.Warn(err)
+		// TODO: Add routines
+		//var repos []string
+		reposChan := make(chan github.Repository)
+		done := make(chan bool)
+
+		go getSearchResults(ctx, client, 1, reposChan)
+		go handleRepos(ctx, client, reposChan, done)
+		//repos = append(repos, <-ch)
+		for x := range done {
+			if x == true {
+				fmt.Println("Created a fork, committed the change and opened the pull request")
 			}
 		}
+		//fmt.Println(results.GetIncompleteResults())
+		//fmt.Println(results.GetTotal())
+		//fmt.Println(results.Total)
+		//fmt.Println(results)
+
 		return nil
 	}
 
@@ -120,79 +137,173 @@ func main() {
 	p.Run()
 }
 
-// getNotifications iterates over all the notifications received by a user.
-func getNotifications(ctx context.Context, client *github.Client, username string, page, perPage int) error {
-	opt := &github.NotificationListOptions{
-		All:   true,
-		Since: lastChecked,
-		ListOptions: github.ListOptions{
-			Page:    page,
-			PerPage: perPage,
-		},
-	}
-	if lastChecked.IsZero() {
-		lastChecked = time.Now()
-	}
-
-	notifications, resp, err := client.Activity.ListNotifications(ctx, opt)
-	if err != nil {
-		return err
-	}
-
-	for _, notification := range notifications {
-		// handle event
-		if err := handleNotification(ctx, client, notification, username); err != nil {
-			return err
+func getSearchResults(ctx context.Context, client *github.Client, page int, repos chan github.Repository) {
+	opts := &github.SearchOptions{Sort: "indexed", Order: "asc", ListOptions: github.ListOptions{Page: page}}
+	for {
+		//if resp, ok := cache.Get(strconv.Itoa(page)); shouldCache && ok {
+		//
+		//}
+		results, resp, err := client.Search.Code(ctx, "github.com/golang/lint/golint filename:.travis.yml", opts)
+		if _, ok := err.(*github.RateLimitError); ok {
+			logrus.Fatal("hit rate limit")
+			close(repos)
 		}
-	}
+		if err != nil {
+			logrus.Fatal(err)
+			close(repos)
+		}
 
-	// Return early if we are on the last page.
-	if page == resp.LastPage || resp.NextPage == 0 {
-		return nil
-	}
+		//for _, value := range results.CodeResults {
+		for _, value := range results.CodeResults[:1] {
+			repos <- *value.GetRepository()
+		}
 
-	page = resp.NextPage
-	return getNotifications(ctx, client, username, page, perPage)
+		if resp.NextPage == 0 || results.GetIncompleteResults() == false {
+			break
+		}
+
+		opts.Page = resp.NextPage
+		time.Sleep(2050 * time.Millisecond)
+		break // TODO: Remove when Ready
+	}
+	close(repos)
+	return
 }
 
-func handleNotification(ctx context.Context, client *github.Client, notification *github.Notification, username string) error {
-	// Check if the type is a pull request.
-	if *notification.Subject.Type == "PullRequest" {
-		// Let's get some information about the pull request.
-		parts := strings.Split(*notification.Subject.URL, "/")
-		last := parts[len(parts)-1]
-		id, err := strconv.Atoi(last)
+func handleRepos(ctx context.Context, client *github.Client, repos chan github.Repository, done chan bool) {
+	forks := make(chan github.Repository)
+	for repo := range repos {
+		go createFork(ctx, client, repo, forks)
+	}
+	for repo := range forks {
+		//file, repo, err := getFileContent(ctx, client, &repo)
+		//if err != nil {
+		//	logrus.Fatal(err)
+		//	close(done)
+		//	break
+		//}
+		//
+		//fixedFile, err := fixFile(file)
+		//if err != nil {
+		//	logrus.Fatal(err)
+		//	close(done)
+		//	break
+		//}
+		//
+		//commitMessage := new(string)
+		//*commitMessage = "Fix golint import path"
+		//SHA := file.GetSHA()
+		//opts := github.RepositoryContentFileOptions{Content: fixedFile, Message: commitMessage, SHA: &SHA}
+		//err = updateFile(ctx, client, repo, &opts)
+		//if err != nil {
+		//	logrus.Fatal(err)
+		//	close(done)
+		//	break
+		//}
+		err := createPullRequest(ctx, client, &repo)
 		if err != nil {
-			return err
+			logrus.Fatal(err)
+			close(done)
+			break
 		}
+		done <- true
+	}
+	close(done)
+}
 
-		pr, _, err := client.PullRequests.Get(ctx, *notification.Repository.Owner.Login, *notification.Repository.Name, id)
-		if err != nil {
-			return err
-		}
+func createFork(ctx context.Context, client *github.Client, repo github.Repository, forks chan github.Repository) {
+	result, _, err := client.Repositories.CreateFork(ctx, repo.GetOwner().GetLogin(), repo.GetName(), new(github.RepositoryCreateForkOptions))
+	if _, ok := err.(*github.RateLimitError); ok {
+		logrus.Fatal("hit rate limit")
+		return
+	}
+	if _, ok := err.(*github.AcceptedError); ok {
+		time.Sleep(30 * time.Second)
+		forks <- *result
+		return
+	}
+	if err != nil {
+		logrus.Fatal(err)
+		return
+	}
+}
 
-		if *pr.State == "closed" && *pr.Merged {
-			// If the PR was made from a repository owned by the current user,
-			// let's delete it.
-			branch := *pr.Head.Ref
-			if pr.Head.Repo == nil {
-				return nil
-			}
-			if pr.Head.Repo.Owner == nil {
-				return nil
-			}
-			owner := *pr.Head.Repo.Owner.Login
-			// Never delete the master branch or a branch we do not own.
-			if owner == username && branch != "master" {
-				_, err := client.Git.DeleteRef(ctx, username, *pr.Head.Repo.Name, strings.Replace("heads/"+*pr.Head.Ref, "#", "%23", -1))
-				// 422 is the error code for when the branch does not exist.
-				if err != nil && !strings.Contains(err.Error(), " 422 ") {
-					return err
-				}
-				logrus.Infof("Branch %s on %s/%s no longer exists.", branch, owner, *pr.Head.Repo.Name)
-			}
+func getFileContent(ctx context.Context, client *github.Client, repo *github.Repository) (*github.RepositoryContent, *github.Repository, error) {
+	// first check that the repo exists
+	for i := 0; i < 4; i++ {
+		result, _, err := client.Repositories.Get(ctx, repo.GetOwner().GetLogin(), repo.GetName())
+		if _, ok := err.(*github.RateLimitError); ok {
+			logrus.Fatal("hit rate limit")
+			return nil, nil, err
 		}
+		if err == nil {
+			repo = result
+			break
+		}
+		time.Sleep(30 * time.Second)
 	}
 
+	file, _, _, err := client.Repositories.GetContents(ctx, repo.GetOwner().GetLogin(), repo.GetName(), ".travis.yml", new(github.RepositoryContentGetOptions))
+	if _, ok := err.(*github.RateLimitError); ok {
+		logrus.Fatal("hit rate limit")
+		return nil, nil, err
+	}
+	if err != nil {
+		logrus.Fatal(err)
+		return nil, nil, err
+	}
+	return file, repo, nil
+}
+
+func fixFile(file *github.RepositoryContent) ([]byte, error) {
+	fileContent, err := file.GetContent()
+	if err != nil {
+		fmt.Println("unable to get file content:", err)
+		return []byte(""), err
+	}
+	//decoded, err := base64.StdEncoding.DecodeString(fileContent)
+	//if err != nil {
+	//	fmt.Println("decode error:", err)
+	//	return []byte(""), err
+	//}
+	result := strings.Replace(string(fileContent), "github.com/golang/lint/golint", "golang.org/x/lint/golint", -1)
+
+	return []byte(result), nil
+}
+
+func updateFile(ctx context.Context, client *github.Client, repo *github.Repository, opts *github.RepositoryContentFileOptions) error {
+	_, _, err := client.Repositories.UpdateFile(ctx, repo.GetOwner().GetLogin(), repo.GetName(), ".travis.yml", opts)
+	if _, ok := err.(*github.RateLimitError); ok {
+		logrus.Fatal("hit rate limit")
+		return err
+	}
+	if err != nil {
+		logrus.Fatal(err)
+		return err
+	}
+	return nil
+}
+
+func createPullRequest(ctx context.Context, client *github.Client, repo *github.Repository) error {
+	parentRepo := repo.GetParent()
+	title := "Fix golint import path"
+	head := repo.GetOwner().GetLogin() + ":master"
+	base := "master"
+	canEdit := true
+	opts := &github.NewPullRequest{}
+	opts.Title = &title
+	opts.Head = &head
+	opts.Base = &base
+	opts.MaintainerCanModify = &canEdit
+
+	_, _, err := client.PullRequests.Create(ctx, parentRepo.GetOwner().GetLogin(), parentRepo.GetName(),  opts)
+	if _, ok := err.(*github.RateLimitError); ok {
+		logrus.Fatal("hit rate limit")
+		return err
+	}
+	if err != nil {
+		logrus.Fatal(err)
+		return err
+	}
 	return nil
 }

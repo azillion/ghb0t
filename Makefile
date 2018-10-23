@@ -1,6 +1,6 @@
 # Setup name variables for the package/tool
 NAME := ghb0t
-PKG := github.com/genuinetools/$(NAME)
+PKG := github.com/azillion/$(NAME)
 
 CGO_ENABLED := 0
 
