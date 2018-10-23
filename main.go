@@ -5,18 +5,26 @@ import (
 	"flag"
 	"fmt"
 	"github.com/azillion/ghb0t/version"
+	"github.com/blang/semver"
 	"github.com/genuinetools/pkg/cli"
 	"github.com/google/go-github/github"
 	"github.com/gregjones/httpcache/diskcache"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
+	"gopkg.in/yaml.v2"
+	"log"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+type Travis struct {
+	GoVersions []string `yaml:"go,flow"`
+}
 
 var (
 	token    string
@@ -25,12 +33,22 @@ var (
 
 	lastChecked time.Time
 
-	debug       bool
-	shouldCache bool
-	cache       *diskcache.Cache
+	debug          bool
+	shouldCache    bool
+	cache          *diskcache.Cache
+	validGoVersion semver.Version
 )
 
+func init() {
+	v, err := semver.ParseTolerant("1.9")
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	validGoVersion = v
+}
+
 func main() {
+	// TODO: Pass vars instead of pointers for the repos. Most likely the issue
 	// Create a new cli program.
 	p := cli.NewProgram()
 	p.Name = "ghb0t"
@@ -63,7 +81,6 @@ func main() {
 		if shouldCache {
 			cache = diskcache.New(".search-cache")
 		}
-
 		return nil
 	}
 
@@ -113,22 +130,18 @@ func main() {
 		logrus.Infof("Bot started for user %s.", username)
 
 		// TODO: Add routines
-		//var repos []string
-		reposChan := make(chan github.Repository)
+		reposChan := make(chan *github.Repository)
 		done := make(chan bool)
 
 		go getSearchResults(ctx, client, 1, reposChan)
 		go handleRepos(ctx, client, reposChan, done)
-		//repos = append(repos, <-ch)
-		for x := range done {
-			if x == true {
-				fmt.Println("Created a fork, committed the change and opened the pull request")
-			}
+		for range reposChan {
+			fmt.Println("hep")
 		}
-		//fmt.Println(results.GetIncompleteResults())
-		//fmt.Println(results.GetTotal())
-		//fmt.Println(results.Total)
-		//fmt.Println(results)
+		fmt.Println("make it here")
+		for range done {
+			fmt.Println("hep2")
+		}
 
 		return nil
 	}
@@ -137,25 +150,39 @@ func main() {
 	p.Run()
 }
 
-func getSearchResults(ctx context.Context, client *github.Client, page int, repos chan github.Repository) {
+func getSearchResults(ctx context.Context, client *github.Client, page int, repos chan<- *github.Repository) {
 	opts := &github.SearchOptions{Sort: "indexed", Order: "asc", ListOptions: github.ListOptions{Page: page}}
 	for {
-		//if resp, ok := cache.Get(strconv.Itoa(page)); shouldCache && ok {
-		//
-		//}
 		results, resp, err := client.Search.Code(ctx, "github.com/golang/lint/golint filename:.travis.yml", opts)
 		if _, ok := err.(*github.RateLimitError); ok {
 			logrus.Fatal("hit rate limit")
 			close(repos)
+			return
 		}
 		if err != nil {
 			logrus.Fatal(err)
 			close(repos)
+			return
 		}
 
-		//for _, value := range results.CodeResults {
-		for _, value := range results.CodeResults[:1] {
-			repos <- *value.GetRepository()
+		for _, cr := range results.CodeResults {
+			//for _, cr := range results.CodeResults[:1] {
+			fileContent, _, _, err := getFileContent(ctx, client, cr.GetRepository())
+			if _, ok := err.(*github.RateLimitError); ok {
+				logrus.Fatal("hit rate limit")
+				close(repos)
+				return
+			}
+			if err != nil {
+				continue
+			}
+			if ok := checkValidGoVersion([]byte(fileContent)); ok {
+				fmt.Println("sending")
+				repos <- cr.GetRepository()
+				close(repos)
+				fmt.Println("sent")
+				return
+			}
 		}
 
 		if resp.NextPage == 0 || results.GetIncompleteResults() == false {
@@ -170,37 +197,78 @@ func getSearchResults(ctx context.Context, client *github.Client, page int, repo
 	return
 }
 
-func handleRepos(ctx context.Context, client *github.Client, repos chan github.Repository, done chan bool) {
-	forks := make(chan github.Repository)
-	for repo := range repos {
-		go createFork(ctx, client, repo, forks)
+func checkValidGoVersion(travisFile []byte) (bool) {
+	travisYML := Travis{}
+
+	err := yaml.Unmarshal(travisFile, &travisYML)
+	if err != nil {
+		log.Fatalf("error: %v", err)
+		return false
 	}
+
+	for _, value := range travisYML.GoVersions {
+		ver, err := semver.ParseTolerant(value)
+		if err != nil {
+			return false
+		}
+		if validGoVersion.GT(ver) {
+			return false
+		}
+	}
+	return true
+}
+
+func handleRepos(ctx context.Context, client *github.Client, repos <-chan *github.Repository, done chan<- bool) {
+	forks := make(chan *github.Repository, 10)
+	var wg sync.WaitGroup
+	// create the fork
+	for repo := range repos {
+		wg.Add(1)
+		fmt.Println("moved on")
+		go createFork(ctx, client, repo, forks, wg)
+	}
+
+	// create the commit and PR
 	for repo := range forks {
-		//file, repo, err := getFileContent(ctx, client, &repo)
-		//if err != nil {
-		//	logrus.Fatal(err)
-		//	close(done)
-		//	break
-		//}
-		//
-		//fixedFile, err := fixFile(file)
-		//if err != nil {
-		//	logrus.Fatal(err)
-		//	close(done)
-		//	break
-		//}
-		//
-		//commitMessage := new(string)
-		//*commitMessage = "Fix golint import path"
-		//SHA := file.GetSHA()
-		//opts := github.RepositoryContentFileOptions{Content: fixedFile, Message: commitMessage, SHA: &SHA}
-		//err = updateFile(ctx, client, repo, &opts)
-		//if err != nil {
-		//	logrus.Fatal(err)
-		//	close(done)
-		//	break
-		//}
-		err := createPullRequest(ctx, client, &repo)
+		fmt.Println("plz")
+		// verify that the forked repo is fully created
+		for i := 0; i < 4; i++ {
+			result, _, err := client.Repositories.Get(ctx, repo.GetOwner().GetLogin(), repo.GetName())
+			if _, ok := err.(*github.RateLimitError); ok {
+				logrus.Fatal("hit rate limit")
+				close(done)
+				return
+			}
+			if err == nil {
+				repo = result
+				break
+			}
+			time.Sleep(30 * time.Second)
+		}
+
+		// get .travis.yml
+		fileContent, file, repo, err := getFileContent(ctx, client, repo)
+		if err != nil {
+			logrus.Fatal(err)
+			close(done)
+			break
+		}
+
+		// create commit
+		fixedFile := fixFile(fileContent)
+		commitMessage := new(string)
+		*commitMessage = "Fix golint import path"
+		SHA := file.GetSHA()
+		opts := github.RepositoryContentFileOptions{Content: []byte(fixedFile), Message: commitMessage, SHA: &SHA}
+		err = updateFile(ctx, client, repo, &opts)
+		if err != nil {
+			logrus.Fatal(err)
+			close(done)
+			break
+		}
+
+		// create PR
+		err = createPullRequest(ctx, client, repo)
 		if err != nil {
 			logrus.Fatal(err)
 			close(done)
@@ -208,67 +276,54 @@ func handleRepos(ctx context.Context, client *github.Client, repos chan github.R
 		}
 		done <- true
 	}
-	close(done)
+
+	go func() {
+		wg.Wait()
+		close(forks)
+		close(done)
+	}()
 }
 
-func createFork(ctx context.Context, client *github.Client, repo github.Repository, forks chan github.Repository) {
+func createFork(ctx context.Context, client *github.Client, repo *github.Repository, forks chan<- *github.Repository, wg sync.WaitGroup) {
+	defer wg.Done()
 	result, _, err := client.Repositories.CreateFork(ctx, repo.GetOwner().GetLogin(), repo.GetName(), new(github.RepositoryCreateForkOptions))
 	if _, ok := err.(*github.RateLimitError); ok {
 		logrus.Fatal("hit rate limit")
+		close(forks)
 		return
 	}
 	if _, ok := err.(*github.AcceptedError); ok {
 		time.Sleep(30 * time.Second)
-		forks <- *result
+		forks <- result
 		return
 	}
 	if err != nil {
 		logrus.Fatal(err)
+		close(forks)
 		return
 	}
 }
 
-func getFileContent(ctx context.Context, client *github.Client, repo *github.Repository) (*github.RepositoryContent, *github.Repository, error) {
-	// first check that the repo exists
-	for i := 0; i < 4; i++ {
-		result, _, err := client.Repositories.Get(ctx, repo.GetOwner().GetLogin(), repo.GetName())
-		if _, ok := err.(*github.RateLimitError); ok {
-			logrus.Fatal("hit rate limit")
-			return nil, nil, err
-		}
-		if err == nil {
-			repo = result
-			break
-		}
-		time.Sleep(30 * time.Second)
-	}
-
+func getFileContent(ctx context.Context, client *github.Client, repo *github.Repository) (string, *github.RepositoryContent, *github.Repository, error) {
 	file, _, _, err := client.Repositories.GetContents(ctx, repo.GetOwner().GetLogin(), repo.GetName(), ".travis.yml", new(github.RepositoryContentGetOptions))
 	if _, ok := err.(*github.RateLimitError); ok {
 		logrus.Fatal("hit rate limit")
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	if err != nil {
-		logrus.Fatal(err)
-		return nil, nil, err
+		return "", nil, nil, err
 	}
-	return file, repo, nil
-}
-
-func fixFile(file *github.RepositoryContent) ([]byte, error) {
 	fileContent, err := file.GetContent()
 	if err != nil {
 		fmt.Println("unable to get file content:", err)
-		return []byte(""), err
+		fileContent = ""
 	}
-	//decoded, err := base64.StdEncoding.DecodeString(fileContent)
-	//if err != nil {
-	//	fmt.Println("decode error:", err)
-	//	return []byte(""), err
-	//}
-	result := strings.Replace(string(fileContent), "github.com/golang/lint/golint", "golang.org/x/lint/golint", -1)
+	return fileContent, file, repo, nil
+}
 
-	return []byte(result), nil
+func fixFile(fileContent string) string {
+	result := strings.Replace(fileContent, "github.com/golang/lint/golint", "golang.org/x/lint/golint", -1)
+	return result
 }
 
 func updateFile(ctx context.Context, client *github.Client, repo *github.Repository, opts *github.RepositoryContentFileOptions) error {
@@ -296,7 +351,7 @@ func createPullRequest(ctx context.Context, client *github.Client, repo *github.
 	opts.Base = &base
 	opts.MaintainerCanModify = &canEdit
 
-	_, _, err := client.PullRequests.Create(ctx, parentRepo.GetOwner().GetLogin(), parentRepo.GetName(),  opts)
+	_, _, err := client.PullRequests.Create(ctx, parentRepo.GetOwner().GetLogin(), parentRepo.GetName(), opts)
 	if _, ok := err.(*github.RateLimitError); ok {
 		logrus.Fatal("hit rate limit")
 		return err
