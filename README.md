@@ -1,40 +1,34 @@
-# ghb0t
+# golint-fixer
 
-[![Travis CI](https://img.shields.io/travis/genuinetools/ghb0t.svg?style=for-the-badge)](https://travis-ci.org/genuinetools/ghb0t)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-5272B4.svg?style=for-the-badge)](https://godoc.org/github.com/genuinetools/ghb0t)
-[![Github All Releases](https://img.shields.io/github/downloads/genuinetools/ghb0t/total.svg?style=for-the-badge)](https://github.com/genuinetools/ghb0t/releases)
+[![Travis CI](https://img.shields.io/travis/azillion/ghb0t.svg?style=for-the-badge)](https://travis-ci.org/genuinetools/ghb0t)
 
-A GitHub Bot to automatically delete your fork's branches after a pull request
-has been merged.
+A GitHub Bot to automatically create pull requests to fix golint imports.
 
-> **NOTE:** This will **never** delete a branch named "master" AND will
-**never** delete a branch that is not owned by the current authenticated user.
-If the pull request is closed _without_ merging, it will **not** delete it.
+> **NOTE:** You probably don't want to run this.
+
+> **NOTE:** Also, the stuff I wrote is messy, one-off, go code. The good code is from [Genuine Tools](github.com/genuinetools)
+
+> **NOTE:** Also, also, if you hate me for opening so many PRs please let me know on [Twitter](https:twitter.com/alex_zillion). And sorry!
 
  * [Installation](README.md#installation)
-      * [Binaries](README.md#binaries)
       * [Via Go](README.md#via-go)
  * [Usage](README.md#usage)
 
 ## Installation
 
-#### Binaries
-
-For installation instructions from binaries please visit the [Releases Page](https://github.com/genuinetools/ghb0t/releases).
-
 #### Via Go
 
 ```console
-$ go get github.com/genuinetools/ghb0t
+$ go get github.com/azillion/golint-fixer
 ```
 
 ## Usage
 
 ```console
-$ ghb0t -h
-ghb0t -  A GitHub Bot to automatically delete your fork's branches after a pull request has been merged.
+$ golint-fixer -h
+golint-fixer -  A GitHub Bot to automatically create pull requests to fix golint imports.
 
-Usage: ghb0t <command>
+Usage: golint-fixer <command>
 
 Flags:
 
