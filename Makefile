@@ -1,5 +1,5 @@
 # Setup name variables for the package/tool
-NAME := ghb0t
+NAME := golint-fixer
 PKG := github.com/azillion/$(NAME)
 
 CGO_ENABLED := 0
