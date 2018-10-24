@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/azillion/ghb0t/version"
+	"github.com/azillion/golint-fixer/version"
 	"github.com/blang/semver"
 	"github.com/genuinetools/pkg/cli"
 	"github.com/google/go-github/github"
@@ -146,7 +146,7 @@ func getSearchResults(ctx context.Context, client *github.Client, page int, repo
 	defer wg.Done()
 	defer close(repos)
 	opts := &github.SearchOptions{Sort: "indexed", Order: "asc", ListOptions: github.ListOptions{Page: page}}
-	for i := 0; i < 2; i++ {
+	for {
 		results, resp, err := client.Search.Code(ctx, "github.com/golang/lint/golint filename:.travis.yml", opts)
 		if _, ok := err.(*github.RateLimitError); ok {
 			logrus.Fatal("hit rate limit")
