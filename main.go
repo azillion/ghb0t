@@ -35,6 +35,7 @@ var (
 
 	debug          bool
 	validGoVersion semver.Version
+	pageStart      int
 )
 
 func init() {
@@ -62,6 +63,7 @@ func main() {
 	p.FlagSet.StringVar(&enturl, "url", "", "Connect to a specific GitHub server, provide full API URL (ex. https://github.example.com/api/v3/)")
 
 	p.FlagSet.BoolVar(&debug, "d", false, "enable debug logging")
+	p.FlagSet.IntVar(&pageStart, "p", 1, "page to start on")
 
 	// Set the before function.
 	p.Before = func(ctx context.Context) error {
@@ -127,7 +129,7 @@ func main() {
 
 		var wg sync.WaitGroup
 		wg.Add(3)
-		go getSearchResults(ctx, client, 1, reposChan, &wg)
+		go getSearchResults(ctx, client, pageStart, reposChan, &wg)
 		go handleRepos(ctx, client, reposChan, forksChan, &wg)
 		go handleForks(ctx, client, forksChan, &wg)
 		wg.Wait()
@@ -144,7 +146,6 @@ func main() {
 
 func getSearchResults(ctx context.Context, client *github.Client, page int, repos chan<- github.Repository, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer close(repos)
 	opts := &github.SearchOptions{Sort: "indexed", Order: "asc", ListOptions: github.ListOptions{Page: page}}
 	for {
 		results, resp, err := client.Search.Code(ctx, "github.com/golang/lint/golint filename:.travis.yml", opts)
@@ -175,9 +176,9 @@ func getSearchResults(ctx context.Context, client *github.Client, page int, repo
 			}
 
 			// check for a valid go version
-			if ok := checkValidGoVersion([]byte(fileContent)); ok == false {
-				continue
-			}
+			// if ok := checkValidGoVersion([]byte(fileContent)); ok == false {
+			// 	continue
+			// }
 
 			// check that golint-fixer hasn't already opened a PR
 			openPRsFiltered, _, err := client.PullRequests.List(ctx, repo.GetOwner().GetLogin(), repo.GetName(), &github.PullRequestListOptions{State: "all", Head: "golint-fixer:master"})
@@ -203,7 +204,7 @@ func getSearchResults(ctx context.Context, client *github.Client, page int, repo
 		opts.Page = resp.NextPage
 		logrus.Debugf("Going to page %d", resp.NextPage)
 		// to stay within search rate limit
-		time.Sleep(2 * time.Second)
+		time.Sleep(4 * time.Second)
 	}
 	logrus.Debug("Done searching!")
 	return
@@ -232,7 +233,6 @@ func checkValidGoVersion(travisFile []byte) bool {
 
 func handleRepos(ctx context.Context, client *github.Client, repos <-chan github.Repository, forks chan<- github.Repository, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer close(forks)
 	var wg2 sync.WaitGroup
 
 	// create the fork
@@ -245,10 +245,31 @@ func handleRepos(ctx context.Context, client *github.Client, repos <-chan github
 	wg2.Wait()
 }
 
+func createFork(ctx context.Context, client *github.Client, repo github.Repository, forks chan<- github.Repository, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	result, _, err := client.Repositories.CreateFork(ctx, repo.GetOwner().GetLogin(), repo.GetName(), new(github.RepositoryCreateForkOptions))
+	if _, ok := err.(*github.RateLimitError); ok {
+		logrus.Fatal("hit rate limit")
+		return
+	}
+	if _, ok := err.(*github.AcceptedError); ok {
+		// logrus.Debugf("Sleeping after fork creation of %s", repo.GetName())
+		time.Sleep(2 * time.Second)
+		forks <- *result
+		return
+	}
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+}
+
 func handleForks(ctx context.Context, client *github.Client, forks <-chan github.Repository, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for repo := range forks {
+		time.Sleep(2 * time.Second)
 		// verify that the forked repo is fully created
 		for i := 0; i < 4; i++ {
 			result, _, err := client.Repositories.Get(ctx, repo.GetOwner().GetLogin(), repo.GetName())
@@ -267,48 +288,28 @@ func handleForks(ctx context.Context, client *github.Client, forks <-chan github
 		// get .travis.yml
 		fileContent, file, repo, err := getFileContent(ctx, client, &repo)
 		if err != nil {
-			logrus.Fatal(err)
-			break
+			logrus.Error(err)
+			continue
 		}
 
-		// create commit
-		fixedFile := fixFile(fileContent)
-		commitMessage := new(string)
-		*commitMessage = "Fix golint import path"
-		SHA := file.GetSHA()
-		opts := github.RepositoryContentFileOptions{Content: []byte(fixedFile), Message: commitMessage, SHA: &SHA}
-		err = updateFile(ctx, client, *repo, opts)
+		// replace with correct path
+		fixedFile := strings.Replace(fileContent, "github.com/golang/lint/golint", "golang.org/x/lint/golint", -1)
+		err = createCommit(ctx, client, *repo, file, fixedFile)
+		if _, ok := err.(*github.RateLimitError); ok {
+			logrus.Fatal("hit rate limit")
+			continue
+		}
 		if err != nil {
-			logrus.Fatal(err)
-			break
+			logrus.Error(err)
+			continue
 		}
 
 		// create PR
 		err = createPullRequest(ctx, client, *repo)
 		if err != nil {
-			logrus.Fatal(err)
-			break
+			logrus.Error(err)
+			continue
 		}
-	}
-}
-
-func createFork(ctx context.Context, client *github.Client, repo github.Repository, forks chan<- github.Repository, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	result, _, err := client.Repositories.CreateFork(ctx, repo.GetOwner().GetLogin(), repo.GetName(), new(github.RepositoryCreateForkOptions))
-	if _, ok := err.(*github.RateLimitError); ok {
-		logrus.Fatal("hit rate limit")
-		return
-	}
-	if _, ok := err.(*github.AcceptedError); ok {
-		logrus.Debugf("Sleeping after fork creation of %s", repo.GetName())
-		time.Sleep(2 * time.Second)
-		forks <- *result
-		return
-	}
-	if err != nil {
-		logrus.Fatal(err)
-		return
 	}
 }
 
@@ -321,17 +322,39 @@ func getFileContent(ctx context.Context, client *github.Client, repo *github.Rep
 	if err != nil {
 		return "", nil, nil, err
 	}
+
 	fileContent, err := file.GetContent()
 	if err != nil {
 		logrus.Debugf("unable to get file content: %v", err)
-		fileContent = ""
+		return "", file, repo, err
 	}
 	return fileContent, file, repo, nil
 }
 
-func fixFile(fileContent string) string {
-	result := strings.Replace(fileContent, "github.com/golang/lint/golint", "golang.org/x/lint/golint", -1)
-	return result
+func createCommit(ctx context.Context, client *github.Client, repo github.Repository, file *github.RepositoryContent, fileContent string) error {
+	// check for an existing commit
+	commits, _, err := client.Repositories.ListCommits(ctx, repo.GetOwner().GetLogin(), repo.GetName(), &github.CommitsListOptions{Author: "golint-fixer"})
+	if err != nil {
+		return err
+	}
+	if len(commits) > 1 {
+		return fmt.Errorf("Duplicate commit in %s", repo.GetName())
+	}
+
+	if len(commits) == 1 {
+		return nil
+	}
+
+	// create commit
+	commitMessage := new(string)
+	*commitMessage = "Fix golint import path"
+	SHA := file.GetSHA()
+	opts := github.RepositoryContentFileOptions{Content: []byte(fileContent), Message: commitMessage, SHA: &SHA}
+	err = updateFile(ctx, client, repo, opts)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func updateFile(ctx context.Context, client *github.Client, repo github.Repository, opts github.RepositoryContentFileOptions) error {
@@ -342,8 +365,7 @@ func updateFile(ctx context.Context, client *github.Client, repo github.Reposito
 	}
 	if err != nil {
 		logrus.Debug("Failed to create commit")
-		logrus.Fatal(err)
-		return err
+		logrus.Error(err)
 	}
 	return nil
 }
@@ -353,11 +375,14 @@ func createPullRequest(ctx context.Context, client *github.Client, repo github.R
 	title := "Fix golint import path"
 	head := repo.GetOwner().GetLogin() + ":master"
 	base := "master"
+	body := "I am a bot. Please reach out to [@azillion](https://github.com/azillion) if you have any issues, or just close the PR."
 	canEdit := true
+
 	opts := &github.NewPullRequest{}
 	opts.Title = &title
 	opts.Head = &head
 	opts.Base = &base
+	opts.Body = &body
 	opts.MaintainerCanModify = &canEdit
 
 	_, _, err := client.PullRequests.Create(ctx, parentRepo.GetOwner().GetLogin(), parentRepo.GetName(), opts)
@@ -367,7 +392,6 @@ func createPullRequest(ctx context.Context, client *github.Client, repo github.R
 	}
 	if err != nil {
 		logrus.Debug("Failed to create PR")
-		logrus.Fatal(err)
 		return err
 	}
 	logrus.Infof("Created PR for %s", repo.GetName())
