@@ -2,13 +2,15 @@
 
 [![Travis CI](https://img.shields.io/travis/azillion/ghb0t.svg?style=for-the-badge)](https://travis-ci.org/genuinetools/ghb0t)
 
+[@golint-fixer](https://github.com/golint-fixer)
+
 A GitHub Bot to automatically create pull requests to fix golint imports.
 
 > **NOTE:** You probably don't want to run this.
 
 > **NOTE:** Also, the stuff I wrote is messy, one-off, go code. The good code is from [Genuine Tools](github.com/genuinetools)
 
-> **NOTE:** Also, also, if you hate me for opening so many PRs please let me know on [Twitter](https:twitter.com/alex_zillion). And sorry!
+> **NOTE:** Also, also, if you hate me for opening so many PRs please let me know on [Twitter](https:twitter.com/alex_zillion).
 
  * [Installation](README.md#installation)
       * [Via Go](README.md#via-go)
