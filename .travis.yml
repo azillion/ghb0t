@@ -5,6 +5,7 @@ go:
 before_install:
   - go get github.com/blang/semver
   - go get golang.org/x/lint/golint
+  - go get gopkg.in/yaml.v2
   - go get honnef.co/go/tools/cmd/staticcheck
 jobs:
   include:
